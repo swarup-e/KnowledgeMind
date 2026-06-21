@@ -214,8 +214,11 @@ def bot_turn(
 def upload_document(file) -> str:
     if file is None:
         return "No file selected."
+    # gradio 6 gr.File passes a string filepath; older versions pass an object
+    # with .name. Handle both so the upload does not crash in the browser.
+    path = file if isinstance(file, str) else getattr(file, "name", str(file))
     agent = get_agent()
-    result = agent.add_document(file.name)
+    result = agent.add_document(path)
     added   = result.get("added", [])
     skipped = result.get("skipped", [])
     chunks  = result.get("chunks", 0)
