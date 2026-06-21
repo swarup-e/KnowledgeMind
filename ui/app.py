@@ -56,7 +56,7 @@ LEVEL_TRADEOFF_HTML = """
     </tr>
   </thead>
   <tbody>
-    <tr style="background:#EBF3FB">
+    <tr style="background:rgba(128,128,128,0.15)">
       <td style="padding:5px 8px">Autonomy</td>
       <td style="padding:5px 8px; text-align:center">🟢 Low</td>
       <td style="padding:5px 8px; text-align:center">🟡 Medium</td>
@@ -68,7 +68,7 @@ LEVEL_TRADEOFF_HTML = """
       <td style="padding:5px 8px; text-align:center">🟡 Medium</td>
       <td style="padding:5px 8px; text-align:center">🔴 Low</td>
     </tr>
-    <tr style="background:#EBF3FB">
+    <tr style="background:rgba(128,128,128,0.15)">
       <td style="padding:5px 8px">Token Cost</td>
       <td style="padding:5px 8px; text-align:center">🟢 Low</td>
       <td style="padding:5px 8px; text-align:center">🟡 Medium</td>
@@ -80,7 +80,7 @@ LEVEL_TRADEOFF_HTML = """
       <td style="padding:5px 8px; text-align:center">🟡 Medium</td>
       <td style="padding:5px 8px; text-align:center">🟢 High</td>
     </tr>
-    <tr style="background:#EBF3FB">
+    <tr style="background:rgba(128,128,128,0.15)">
       <td style="padding:5px 8px">Control Flow</td>
       <td style="padding:5px 8px; text-align:center" colspan="2">Engineer-defined</td>
       <td style="padding:5px 8px; text-align:center">LLM-directed</td>
@@ -91,7 +91,7 @@ LEVEL_TRADEOFF_HTML = """
       <td style="padding:5px 8px; text-align:center">None</td>
       <td style="padding:5px 8px; text-align:center">Up to 3×</td>
     </tr>
-    <tr style="background:#EBF3FB">
+    <tr style="background:rgba(128,128,128,0.15)">
       <td style="padding:5px 8px">Typical tokens</td>
       <td style="padding:5px 8px; text-align:center">~650</td>
       <td style="padding:5px 8px; text-align:center">~1,800</td>
@@ -112,17 +112,19 @@ Note: token counts are highly use-case dependent. L3 agents can replan up to 3 t
 def _render_routing_log(routing_log: list[dict]) -> str:
     if not routing_log:
         return ""
-    lines = ["**Routing Decisions:**\n"]
+    # Rich markdown with green/yellow badges. NO pipe '|' (gradio can parse it
+    # as a table) and NO &nbsp; entities -- both of those hid the block before.
+    lines = ["**Routing decisions**", ""]
     for log in routing_log:
         decision = log["decision"].upper()
-        badge    = "🟢 LOCAL" if decision == "LOCAL" else "🟡 CLOUD"
+        badge = "🟢 LOCAL" if decision == "LOCAL" else "🟡 CLOUD"
         escalated = " ↑escalated" if log.get("escalated") else ""
         lines.append(
-            f"Step {log['step_id']} &nbsp;|&nbsp; `{log['tool']}` → **{badge}{escalated}**  "
-            f"*(privacy={log['privacy_score']:.2f}, complexity={log['complexity_score']:.2f})*\n"
-            f"&nbsp;&nbsp;&nbsp;&nbsp;_{log['reason']}_"
+            f"- **Step {log['step_id']}** — `{log['tool']}` → **{badge}**{escalated} "
+            f"*(privacy {log['privacy_score']:.2f}, complexity {log['complexity_score']:.2f})*"
         )
-    return "\n\n".join(lines)
+        lines.append(f"  - {log['reason']}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -461,13 +463,16 @@ def build_main_ui(cfg: AppConfig) -> gr.Blocks:
             footer { display: none !important; }
             .token-panel { font-family: monospace; font-size: 0.82em; }
             .level-table { margin-bottom: 8px; }
+            /* Force the trade-off table header cells white (dark-blue bg) so they
+               are readable in light mode too (theme otherwise makes them black). */
+            .level-table th { color: #ffffff !important; }
         """,
     ) as demo:
 
         gr.HTML("""
             <div style="text-align:center; padding:16px 0 8px 0">
-                <h1 style="color:#1B3A6B; font-size:2em; margin:0">🧠 KnowledgeMind</h1>
-                <p style="color:#555; margin:2px 0">
+                <h1 style="color:#3b82f6; font-size:2em; margin:0">🧠 KnowledgeMind</h1>
+                <p style="color:var(--body-text-color-subdued); margin:2px 0">
                     Privacy-Aware Personal AI Agent · IISc Bengaluru
                 </p>
             </div>
@@ -491,7 +496,9 @@ def build_main_ui(cfg: AppConfig) -> gr.Blocks:
                         with gr.Row():
                             msg_input = gr.Textbox(
                                 placeholder="Ask anything — scheduling, web search, documents, calendar...",
+                                label="Message",
                                 show_label=False,
+                                container=False,
                                 scale=5,
                             )
                             send_btn = gr.Button("Send", variant="primary", scale=1)
@@ -505,7 +512,8 @@ def build_main_ui(cfg: AppConfig) -> gr.Blocks:
                                 "L3 — Autonomous Agent (ReAct loop, most capable)",
                             ],
                             value="L2 — Workflow (plan→execute→critique)",
-                            label=None,
+                            label="Agency level",
+                            show_label=False,
                             info="Select agentic autonomy level. Higher = more capable but more tokens.",
                         )
 

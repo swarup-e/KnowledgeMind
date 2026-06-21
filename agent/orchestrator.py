@@ -660,6 +660,13 @@ class HybridMindAgent:
             # Trivial greetings answer locally for every level: no cloud planning,
             # no Groq tokens -- works even when the cloud daily limit is reached.
             if _is_greeting(user_input):
+                # Record a routing entry so the routing panel is not mysteriously
+                # empty for greetings (they answer locally with no tools).
+                routing_log.append({
+                    "step_id": 1, "tool": "single_call", "decision": "local",
+                    "privacy_score": 1.0, "complexity_score": 0.0,
+                    "reason": "Greeting / small talk answered locally; no tools needed.",
+                })
                 answer = _call_ollama(
                     history + [{"role": "user", "content": user_input}],
                     DIRECT_ANSWER_PROMPT, self.tracker, "single_call", level,
