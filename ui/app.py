@@ -214,8 +214,11 @@ def bot_turn(
 def upload_document(file) -> str:
     if file is None:
         return "No file selected."
+    # gradio 6 gr.File passes a string filepath; older versions pass an object
+    # with .name. Handle both so the upload does not crash in the browser.
+    path = file if isinstance(file, str) else getattr(file, "name", str(file))
     agent = get_agent()
-    result = agent.add_document(file.name)
+    result = agent.add_document(path)
     added   = result.get("added", [])
     skipped = result.get("skipped", [])
     chunks  = result.get("chunks", 0)
@@ -451,6 +454,23 @@ def connect_gmail(creds_path: str) -> str:
     return _connect_google(creds_path, "gmail")
 
 
+# Cloud-model dropdown options (label -> uses the 8B fast model when True).
+_CLOUD_MODEL_FAST_LABEL = "Llama 3.1 8B (fast, saves tokens)"
+_CLOUD_MODEL_QUALITY_LABEL = "Llama 3.3 70B (higher quality)"
+_CLOUD_MODEL_CHOICES = [_CLOUD_MODEL_FAST_LABEL, _CLOUD_MODEL_QUALITY_LABEL]
+
+
+def _cloud_model_label(use_fast: bool) -> str:
+    return _CLOUD_MODEL_FAST_LABEL if use_fast else _CLOUD_MODEL_QUALITY_LABEL
+
+
+def set_cloud_model(label: str) -> None:
+    """Persist the cloud planning/critique model choice from the dropdown."""
+    cfg = get_config()
+    cfg.use_fast_cloud_model = (label == _CLOUD_MODEL_FAST_LABEL)
+    save_config(cfg)  # the singleton is updated in place; _call_groq reads it
+
+
 # ---------------------------------------------------------------------------
 # Build UI
 # ---------------------------------------------------------------------------
@@ -486,6 +506,14 @@ def build_main_ui(cfg: AppConfig) -> gr.Blocks:
 
                     # Left column: chat + controls
                     with gr.Column(scale=3):
+                        # Cloud model selector, on top of the chat window.
+                        cloud_model_dropdown = gr.Dropdown(
+                            choices=_CLOUD_MODEL_CHOICES,
+                            value=_cloud_model_label(cfg.use_fast_cloud_model),
+                            label="Cloud model (planning / critique)",
+                            info="8B saves Groq free-tier tokens; 70B is higher quality.",
+                            interactive=True,
+                        )
                         chatbot = gr.Chatbot(
                             label="Conversation",
                             height=420,
@@ -666,6 +694,9 @@ def build_main_ui(cfg: AppConfig) -> gr.Blocks:
 
         connect_calendar_btn.click(connect_calendar, inputs=settings_google, outputs=google_status)
         connect_gmail_btn.click(connect_gmail, inputs=settings_google, outputs=google_status)
+
+        # Cloud-model dropdown: persists immediately, applies to the next query.
+        cloud_model_dropdown.change(set_cloud_model, inputs=cloud_model_dropdown, queue=False)
 
     return demo
 
