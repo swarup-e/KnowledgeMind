@@ -1,0 +1,285 @@
+"""
+api/main.py
+-----------
+FastAPI backend for the KnowledgeMind web UI.
+
+Wraps the existing engine (knowledge graph, monitor, agent) behind a small JSON
+API and serves the static front-end. Designed to run with ZERO setup:
+
+  * Proactive-conflict + KG features work fully offline — they use the bundled
+    mock data and a stub LLM caller (the same pattern as demo_conflicts.py), so
+    the headline demo fires without Ollama or any API key.
+  * The Assistant uses the real agent when a model is configured, and falls back
+    to a clearly-labelled demo response otherwise.
+
+A dedicated demo database (ui_demo.db, reset on launch) is used so the UI never
+touches your real KnowledgeMind data.
+
+Run:  .venv/bin/uvicorn api.main:app --port 8000
+  or: .venv/bin/python -m api.main
+Then open http://127.0.0.1:8000
+"""
+
+from __future__ import annotations
+
+import re
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from config.store import get_config
+from connectors.mock import MockConnector, MockCalendarSource
+from extraction.commitment import extract_commitments
+from kg.schema import get_db_connection
+from monitor.fsm import MonitorRunner
+
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
+
+# ---------------------------------------------------------------------------
+# Offline stub LLM (same approach as demo_conflicts.py) so /scan works w/o keys
+# ---------------------------------------------------------------------------
+
+_CANNED = {
+    "see you at 4": '{"is_commitment": true, "confidence": 0.78, "time_expression": "at 4 today", "normalized_ts": null, "commitment_type": "SOFT"}',
+    "eod monday": '{"is_commitment": true, "confidence": 0.82, "time_expression": "EOD Monday", "normalized_ts": null, "commitment_type": "SOFT"}',
+    "lunch thursday": '{"is_commitment": true, "confidence": 0.70, "time_expression": "Thursday 12:30", "normalized_ts": null, "commitment_type": "SOFT"}',
+    "next week": '{"is_commitment": true, "confidence": 0.45, "time_expression": "next week", "normalized_ts": null, "commitment_type": "TENTATIVE"}',
+}
+_NON_COMMITMENT = '{"is_commitment": false, "confidence": 0.05, "time_expression": "", "normalized_ts": null, "commitment_type": "TENTATIVE"}'
+
+
+def _stub_llm_caller(_system_prompt: str, user_prompt: str) -> str:
+    last_block = user_prompt.rsplit("Message: ", 1)[-1]
+    text = last_block.split("\nJSON:")[0].strip().lower()
+    for needle, response in _CANNED.items():
+        if needle in text:
+            return response
+    return _NON_COMMITMENT
+
+
+def _stub_extractor(message, candidates):
+    return extract_commitments(message, candidates, llm_caller=_stub_llm_caller)
+
+
+# ---------------------------------------------------------------------------
+# Demo database (separate from the real app DB; reset on launch)
+# ---------------------------------------------------------------------------
+
+def _use_demo_db():
+    cfg = get_config()
+    demo_db = Path(cfg.db_path).with_name("ui_demo.db")
+    cfg.db_path = str(demo_db)
+    cfg.alerts_log_path = str(demo_db.with_name("ui_alerts.jsonl"))
+    return cfg
+
+
+def _run_scan() -> dict:
+    """Run one monitor cycle over the bundled mock data into the demo DB."""
+    runner = MonitorRunner(
+        connectors=[MockConnector()],
+        extractor=_stub_extractor,
+        commitment_sources=[MockCalendarSource()],
+    )
+    state = runner.run_once()
+    return {
+        "messages": len(state["new_messages"]),
+        "commitments": len(state["new_commitments"]),
+        "conflicts": len(state["new_conflicts"]),
+        "alerts": state["alerts_fired"],
+    }
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    cfg = _use_demo_db()
+    for path in (cfg.db_path, cfg.alerts_log_path):
+        try:
+            Path(path).unlink()
+        except FileNotFoundError:
+            pass
+    _run_scan()  # seed so the dashboard has data immediately
+    yield
+
+
+app = FastAPI(title="KnowledgeMind", lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Read helpers
+# ---------------------------------------------------------------------------
+
+_STOP = {"today", "tomorrow", "around", "about", "with", "have", "ready", "numbers", "sync"}
+
+
+def _topic_tokens(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z]{4,}", text.lower()) if w not in _STOP}
+
+
+def _commitments() -> list[dict]:
+    cfg = get_config()
+    conn = get_db_connection(cfg.db_path)
+    rows = conn.execute(
+        """SELECT c.id, c.description, c.source, c.commitment_type, c.start_ts,
+                  c.end_ts, c.confidence, COALESCE(p.name, '(self)') AS who
+           FROM commitments c LEFT JOIN persons p ON c.person_id = p.id
+           ORDER BY c.start_ts"""
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def _conflicts() -> list[dict]:
+    cfg = get_config()
+    conn = get_db_connection(cfg.db_path)
+    rows = conn.execute(
+        """SELECT cf.id, cf.overlap_minutes, cf.alerted,
+                  a.description AS a_desc, a.source AS a_src, a.start_ts AS a_start,
+                  b.description AS b_desc, b.source AS b_src, b.start_ts AS b_start
+           FROM conflicts cf
+           JOIN commitments a ON cf.commitment_a_id = a.id
+           JOIN commitments b ON cf.commitment_b_id = b.id
+           ORDER BY a.start_ts"""
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["same_event"] = bool(
+            d["a_src"] != d["b_src"]
+            and abs(d["a_start"] - d["b_start"]) < 60
+            and (_topic_tokens(d["a_desc"]) & _topic_tokens(d["b_desc"]))
+        )
+        out.append(d)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/status")
+def status() -> dict:
+    cfg = get_config()
+    has_key = bool(cfg.groq_api_key)
+    return {
+        "app": "KnowledgeMind",
+        "ready": cfg.is_ready(),
+        "assistant_mode": "live" if has_key else "demo",
+        "local_model": cfg.local_model,
+        "cloud_model": cfg.cloud_model,
+    }
+
+
+@app.post("/api/scan")
+def scan() -> dict:
+    summary = _run_scan()
+    return {**summary, "conflicts_detail": _conflicts()}
+
+
+@app.get("/api/commitments")
+def commitments() -> dict:
+    return {"commitments": _commitments()}
+
+
+@app.get("/api/conflicts")
+def conflicts() -> dict:
+    items = _conflicts()
+    real = [c for c in items if not c["same_event"]]
+    return {"conflicts": items, "real_count": len(real),
+            "duplicate_count": len(items) - len(real)}
+
+
+class ChatIn(BaseModel):
+    message: str
+    level: str = "L1"
+
+
+_agent = None
+
+
+def _get_agent():
+    global _agent
+    if _agent is None:
+        from agent.orchestrator import HybridMindAgent
+        _agent = HybridMindAgent()
+    return _agent
+
+
+def _to_level(name: str):
+    from agent.orchestrator import AgencyLevel
+    try:
+        return AgencyLevel[name.upper()]
+    except Exception:
+        try:
+            return AgencyLevel(name)
+        except Exception:
+            return list(AgencyLevel)[0]
+
+
+def _demo_chat(message: str) -> dict:
+    """Canned, clearly-labelled responses + synthetic routing log (no LLM call)."""
+    m = message.lower()
+    if any(k in m for k in ("chatgpt", "openai", "send my", "upload my")):
+        return {"answer": "That request would send personal data off-device, so I won't do it. "
+                          "I can summarise it locally instead.",
+                "routing_log": [{"action": "privacy_check", "decision": "LOCAL (refused)"}],
+                "demo_mode": True}
+    if any(k in m for k in ("paper", "news", "latest", "search", "web", "weather")):
+        return {"answer": "(demo) That's a public-info lookup, so I'd route it to the cloud model "
+                          "and run a web search — no personal data involved.",
+                "routing_log": [{"action": "web_search", "decision": "CLOUD"}],
+                "demo_mode": True}
+    if any(k in m for k in ("book", "doctor", "4 pm", "4pm", "schedule", "appointment")):
+        return {"answer": "(demo) 4 PM clashes with '1:1 with Priya' on your calendar. "
+                          "I can book it at 5 PM instead — all checks ran on-device.",
+                "routing_log": [{"action": "query_kg", "decision": "LOCAL"},
+                                 {"action": "find_free_slots", "decision": "LOCAL"},
+                                 {"action": "book_slot", "decision": "LOCAL"}],
+                "demo_mode": True}
+    if any(k in m for k in ("conflict", "clash", "this week", "priya", "deadline")):
+        return {"answer": "(demo) From your knowledge graph: a Slack note 'see you at 4' overlaps "
+                          "your calendar '1:1 with Priya' at 16:00. Everything stayed local.",
+                "routing_log": [{"action": "query_kg", "decision": "LOCAL"},
+                                 {"action": "conflict_edges", "decision": "LOCAL"}],
+                "demo_mode": True}
+    return {"answer": "This is a demo response. Add a Groq key (free) to enable live answers — "
+                      "personal-data tasks still stay on-device.",
+            "routing_log": [{"action": "respond", "decision": "LOCAL"}],
+            "demo_mode": True}
+
+
+@app.post("/api/chat")
+def chat(inp: ChatIn) -> dict:
+    cfg = get_config()
+    if cfg.groq_api_key:
+        try:
+            result = _get_agent().run(inp.message, _to_level(inp.level))
+            result["demo_mode"] = False
+            return result
+        except Exception as error:  # noqa: BLE001 -- never 500 the UI
+            fallback = _demo_chat(inp.message)
+            fallback["answer"] = f"(Live model unavailable: {error}) " + fallback["answer"]
+            return fallback
+    return _demo_chat(inp.message)
+
+
+# ---------------------------------------------------------------------------
+# Static front-end
+# ---------------------------------------------------------------------------
+
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+
+@app.get("/")
+def index():
+    return FileResponse(str(FRONTEND_DIR / "index.html"))
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api.main:app", host="127.0.0.1", port=8000, reload=False)
