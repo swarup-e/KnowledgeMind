@@ -406,6 +406,24 @@ def connectors() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Privacy audit (Stream 3) — routing/fallback trail + posture report
+# ---------------------------------------------------------------------------
+
+@app.get("/api/audit")
+def audit_log(limit: int = 100) -> dict:
+    """Recent routing/privacy decisions (newest last)."""
+    from guardrails import audit
+    return {"records": audit.read_recent(limit)}
+
+
+@app.get("/api/privacy/report")
+def privacy_report() -> dict:
+    """Aggregate privacy posture: %local, fallbacks to cloud, leaks prevented."""
+    from guardrails import audit
+    return audit.report()
+
+
+# ---------------------------------------------------------------------------
 # projmgmt addon — mount as ASGI sub-application at /projmgmt
 # ---------------------------------------------------------------------------
 # projmgmt's backend/ directory is added to sys.path only for the duration of
