@@ -664,6 +664,8 @@ export function Settings() {
   const [cfg, setCfg] = useState(null);
   const [form, setForm] = useState({ local_model: "", google_credentials_path: "", complexity_threshold: 0.6, groq_api_key: "", tavily_api_key: "", slack_bot_token: "", allow_cloud_fallback: true });
   const [status, setStatus] = useState("");
+  const [janitor, setJanitor] = useState(null);
+  const [cleaning, setCleaning] = useState(false);
 
   useEffect(() => {
     getJSON("/api/config").then((c) => {
@@ -692,9 +694,21 @@ export function Settings() {
     }
   }
 
+  async function runJanitor(dryRun) {
+    setCleaning(true);
+    try {
+      const r = await postJSON(`/api/kg/janitor${dryRun ? "?dry_run=true" : ""}`);
+      setJanitor(r);
+    } catch {
+      setJanitor({ summary: "Cleanup failed." });
+    }
+    setCleaning(false);
+  }
+
   const hint = (s) => (s ? <span className="set-hint">✓ set</span> : null);
 
   return (
+    <>
     <div className="card">
       <h2 className="section-title" style={{ marginTop: 0 }}>Models &amp; keys</h2>
       <div className="form-grid">
@@ -715,6 +729,17 @@ export function Settings() {
       </div>
       <p style={{ color: "var(--text-muted)", fontSize: 12.5, margin: "16px 0 0" }}>Keys are stored locally in your config file. Personal-data tasks always run on the local model; only low-sensitivity tasks may use the cloud model.</p>
     </div>
+
+    <div className="card" style={{ marginTop: 16 }}>
+      <h2 className="section-title" style={{ marginTop: 0 }}>Maintenance</h2>
+      <p style={{ color: "var(--text-muted)", fontSize: 12.5, margin: "0 0 12px" }}>The knowledge-graph janitor archives stale commitments and prunes old conversation turns so conflict detection stays clean. It runs automatically at startup; trigger it manually here.</p>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <button className="btn" onClick={() => runJanitor(true)} disabled={cleaning}>Preview (dry run)</button>
+        <button className="btn btn-primary" onClick={() => runJanitor(false)} disabled={cleaning}>{cleaning ? "Running…" : "Run cleanup"}</button>
+        {janitor && <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{janitor.summary}{janitor.dry_run ? " (dry run)" : ""}</span>}
+      </div>
+    </div>
+    </>
   );
 }
 
@@ -724,12 +749,15 @@ const pct = (x) => (x * 100).toFixed(1) + "%";
 export function Evaluation({ refresh, notify }) {
   const [report, setReport] = useState(undefined); // undefined=loading, null=none
   const [privacy, setPrivacy] = useState(null);
+  const [traces, setTraces] = useState([]);
   const [running, setRunning] = useState(false);
 
   const loadPrivacy = () => getJSON("/api/privacy/report").then(setPrivacy).catch(() => {});
+  const loadTraces = () => getJSON("/api/eval/traces?limit=20").then((d) => setTraces(d.traces || [])).catch(() => {});
   useEffect(() => {
     getJSON("/api/eval/report").then((d) => setReport(d.report)).catch(() => setReport(null));
     loadPrivacy();
+    loadTraces();
   }, [refresh]);
 
   async function runEval() {
@@ -738,6 +766,7 @@ export function Evaluation({ refresh, notify }) {
       const d = await postJSON("/api/eval/run", {});
       setReport(d.report);
       loadPrivacy();
+      loadTraces();
       notify?.("Evaluation complete");
     } catch {
       notify?.("Eval run failed");
@@ -757,6 +786,27 @@ export function Evaluation({ refresh, notify }) {
       {!report
         ? <Empty big="📊" title="No report yet" sub="Click “Run evaluation” to generate one (offline)." />
         : <EvalReport r={report} privacy={privacy} />}
+      {traces.length > 0 && <EvalTraces traces={traces} />}
+    </>
+  );
+}
+
+function EvalTraces({ traces }) {
+  return (
+    <>
+      <h2 className="section-title">Recent traces ({traces.length})</h2>
+      <div className="stack">
+        {traces.map((t) => (
+          <div className="card" key={t.trace_id} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <span className="badge badge-local">{t.golden_id || "—"}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.input_preview}</div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.answer_preview}</div>
+            </div>
+            <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{t.agency_level} · {t.elapsed}s · {t.tokens ?? 0} tok</span>
+          </div>
+        ))}
+      </div>
     </>
   );
 }
