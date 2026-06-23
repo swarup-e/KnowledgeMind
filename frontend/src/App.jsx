@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, lazy, Suspense } from "react";
 import { getJSON, postJSON, getKey, validateKey, setUnauthorizedHandler, clearKey } from "./api";
 import Login from "./Login.jsx";
 import { Dashboard, Graph, Connectors, Assistant, Documents, Settings } from "./views.jsx";
+// Project Advisor pulls in cytoscape — lazy-load it so it stays out of the main bundle.
+const ProjectAdvisor = lazy(() => import("./projmgmt/ProjectAdvisor.jsx"));
 
 const ic = (d) => <svg viewBox="0 0 24 24" className="icon">{d}</svg>;
 const ICON = {
@@ -43,15 +45,6 @@ const NAV = [
   ["settings",     "Settings"],
 ];
 const TITLES = { ...Object.fromEntries(NAV), tests: "Tests" };
-
-const ProjectAdvisor = () => (
-  <iframe
-    src={`${PROJMGMT_PREFIX}/`}
-    style={{ width: "100%", height: "100%", border: "none", display: "block" }}
-    title="Project Advisor"
-    allow="same-origin"
-  />
-);
 
 const VIEW = {
   dashboard:   Dashboard,
@@ -188,7 +181,9 @@ export default function App() {
           </div>
         </header>
         <div className={"content" + (view === "projadvisor" ? " content--full" : "")}>
-          <ViewComp refresh={refresh} notify={notify} />
+          <Suspense fallback={<div className="empty">Loading…</div>}>
+            <ViewComp refresh={refresh} notify={notify} />
+          </Suspense>
         </div>
       </main>
 
