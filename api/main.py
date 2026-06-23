@@ -365,6 +365,7 @@ def get_config_api() -> dict:
         "groq_api_key_set": bool(cfg.groq_api_key),
         "tavily_api_key_set": bool(cfg.tavily_api_key),
         "slack_bot_token_set": bool(cfg.slack_bot_token),
+        "allow_cloud_fallback": cfg.allow_cloud_fallback,
     }
 
 
@@ -375,6 +376,7 @@ class ConfigUpdate(BaseModel):
     slack_bot_token: Optional[str] = None
     google_credentials_path: Optional[str] = None
     complexity_threshold: Optional[float] = None
+    allow_cloud_fallback: Optional[bool] = None
 
 
 @app.post("/api/config")

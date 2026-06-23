@@ -239,7 +239,7 @@ export function Assistant() {
     setBusy(true);
     try {
       const r = await postJSON("/api/chat", { message: m, level });
-      setMsgs((x) => [...x, { role: "bot", text: r.answer, routing: r.routing_log, demo: r.demo_mode }]);
+      setMsgs((x) => [...x, { role: "bot", text: r.answer, routing: r.routing_log, demo: r.demo_mode, privacy: r.privacy }]);
     } catch {
       setMsgs((x) => [...x, { role: "bot", text: "Sorry — the assistant is unavailable." }]);
     }
@@ -253,6 +253,7 @@ export function Assistant() {
           <div key={i} className={"msg " + msg.role}>
             <div className="bubble">{msg.text}</div>
             {msg.routing && msg.routing.length ? <RouteChips log={msg.routing} /> : null}
+            {msg.privacy ? <PrivacyBadge p={msg.privacy} /> : null}
             {msg.demo ? <div className="demo-note">demo response · add a model for live answers</div> : null}
           </div>
         ))}
@@ -280,6 +281,58 @@ function RouteChips({ log }) {
       })}
     </div>
   );
+}
+
+// Honest per-turn badge: reflects what ACTUALLY executed, including fallbacks.
+function PrivacyBadge({ p }) {
+  if (!p) return null;
+  if (p.personal_fallback)
+    return <div className="route"><span className="badge badge-cloud" title="On-device model unavailable — personal data fell back to the cloud this turn">⚠ Cloud fallback · personal</span></div>;
+  if (p.fallback_blocked)
+    return <div className="route"><span className="badge badge-local" title="On-device model unavailable — fail-closed kept personal data on your device">🔒 Local-only · fail-closed</span></div>;
+  return <div className="route"><span className={"badge " + (p.cloud ? "badge-cloud" : "badge-local")}>{p.cloud ? "Cloud" : "Local"} · this turn</span></div>;
+}
+
+/* ---- Privacy dashboard --------------------------------------------------- */
+export function Privacy({ refresh }) {
+  const [report, setReport] = useState(null);
+  const [records, setRecords] = useState([]);
+  useEffect(() => {
+    Promise.all([getJSON("/api/privacy/report"), getJSON("/api/audit?limit=40")])
+      .then(([rep, aud]) => { setReport(rep); setRecords((aud.records || []).slice().reverse()); })
+      .catch(() => {});
+  }, [refresh]);
+  if (!report) return <Empty big="🔒" title="Loading privacy report…" sub="" />;
+  const kpis = [
+    { n: report.pct_local + "%", l: "Decisions routed LOCAL" },
+    { n: report.leaks_prevented, l: "Leaks prevented (fail-closed)" },
+    { n: report.personal_fallbacks, l: "Personal cloud fallbacks", alert: report.personal_fallbacks > 0 },
+    { n: report.total_decisions, l: "Routing decisions" },
+  ];
+  return (
+    <>
+      <div className="privacy-banner">{ShieldIcon}<div><strong>Provable privacy.</strong> Every routing decision and every local→cloud fallback is logged here. Personal work fails closed when the on-device model is unavailable — toggle it in Settings.</div></div>
+      <div className="kpi-row">{kpis.map((k, i) => <div key={i} className={"kpi" + (k.alert ? " alert" : "")}><div className="num">{k.n}</div><div className="lbl">{k.l}</div></div>)}</div>
+      <h2 className="section-title">Recent decisions</h2>
+      <div className="stack">
+        {records.length === 0
+          ? <Empty big="🗂️" title="No activity yet" sub="Ask the assistant something to populate the trail." />
+          : records.map((r, i) => <AuditRow key={i} r={r} />)}
+      </div>
+    </>
+  );
+}
+
+function AuditRow({ r }) {
+  const row = { display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: "var(--surface)", marginBottom: 6 };
+  const main = { flex: 1, fontSize: 13 };
+  const sub = { fontSize: 12, color: "var(--text-muted)" };
+  if (r.kind === "fallback") {
+    const cls = r.blocked ? "badge-local" : "badge-cloud";
+    return <div style={row}><span className={"badge " + cls}>{r.blocked ? "🔒 fail-closed" : "⚠ cloud fallback"}</span><span style={main}>{r.node}{r.personal ? " · personal" : ""}</span><span style={sub}>{r.model || ""}</span></div>;
+  }
+  const cloud = r.decision === "cloud";
+  return <div style={row}><span className={"badge " + (cloud ? "badge-cloud" : "badge-local")}>{r.decision}</span><span style={main}>{r.tool || "(reasoning)"}</span><span style={sub}>privacy {r.privacy_score}</span></div>;
 }
 
 /* ---- Documents ----------------------------------------------------------- */
@@ -331,13 +384,13 @@ export function Documents() {
 /* ---- Settings ------------------------------------------------------------ */
 export function Settings() {
   const [cfg, setCfg] = useState(null);
-  const [form, setForm] = useState({ local_model: "", google_credentials_path: "", complexity_threshold: 0.6, groq_api_key: "", tavily_api_key: "", slack_bot_token: "" });
+  const [form, setForm] = useState({ local_model: "", google_credentials_path: "", complexity_threshold: 0.6, groq_api_key: "", tavily_api_key: "", slack_bot_token: "", allow_cloud_fallback: true });
   const [status, setStatus] = useState("");
 
   useEffect(() => {
     getJSON("/api/config").then((c) => {
       setCfg(c);
-      setForm((f) => ({ ...f, local_model: c.local_model || "", google_credentials_path: c.google_credentials_path || "", complexity_threshold: c.complexity_threshold ?? 0.6 }));
+      setForm((f) => ({ ...f, local_model: c.local_model || "", google_credentials_path: c.google_credentials_path || "", complexity_threshold: c.complexity_threshold ?? 0.6, allow_cloud_fallback: c.allow_cloud_fallback ?? true }));
     }).catch(() => {});
   }, []);
 
@@ -350,6 +403,7 @@ export function Settings() {
     });
     const num = parseFloat(form.complexity_threshold);
     if (!Number.isNaN(num)) body.complexity_threshold = num;
+    body.allow_cloud_fallback = !!form.allow_cloud_fallback;
     setStatus("Saving…");
     try {
       const r = await postJSON("/api/config", body);
@@ -373,6 +427,10 @@ export function Settings() {
         <label>Slack bot token {cfg && hint(cfg.slack_bot_token_set)}<input className="input" type="password" value={form.slack_bot_token} onChange={upd("slack_bot_token")} placeholder="xoxb-..." /></label>
         <label>Google credentials path<input className="input" value={form.google_credentials_path} onChange={upd("google_credentials_path")} placeholder="./credentials.json" /></label>
       </div>
+      <label style={{ display: "flex", alignItems: "flex-start", gap: 10, marginTop: 16, fontSize: 13, lineHeight: 1.5 }}>
+        <input type="checkbox" style={{ marginTop: 3 }} checked={!!form.allow_cloud_fallback} onChange={(e) => setForm((f) => ({ ...f, allow_cloud_fallback: e.target.checked }))} />
+        <span><strong>Allow cloud fallback for personal work.</strong> When off, personal requests <em>fail closed</em> if the on-device model is unavailable — nothing personal goes to the cloud.</span>
+      </label>
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 16 }}>
         <button className="btn btn-primary" onClick={save}>Save settings</button>
         <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{status}</span>
