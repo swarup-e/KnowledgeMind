@@ -113,6 +113,28 @@ async def lifespan(_app: FastAPI):
             pass
     _run_scan()  # seed so the dashboard has data immediately
 
+    # Archive stale commitments on startup — keeps conflict detection clean.
+    try:
+        from kg.janitor import run_janitor_for_config
+        jr = run_janitor_for_config(apply=True)
+        if jr.total_archived or jr.deleted_turns:
+            print(f"[janitor] {jr.summary()}")
+    except Exception as e:
+        print(f"[janitor] startup run skipped: {e}")
+    # Start the Hermes proactive job scheduler.
+    try:
+        from proactive.scheduler import start as _sched_start
+        _sched_start()
+    except Exception as e:
+        print(f"[scheduler] startup failed: {e}")
+    yield
+    # Shutdown
+    try:
+        from proactive.scheduler import stop as _sched_stop
+        _sched_stop()
+    except Exception:
+        pass
+
     # Proactive runtime: the nudge outbox lives in the demo DB, so it
     # is already wiped by the unlink above. Start the cron loop only when enabled
     # (off by default — see AppConfig.proactive_runtime_enabled).
@@ -394,8 +416,80 @@ def set_config_api(upd: ConfigUpdate) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Nudges (Hermes proactive runtime)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/nudges")
+def get_nudges(limit: int = 20, undismissed: bool = True) -> dict:
+    """Return recent proactive nudges from the outbox."""
+    from proactive.outbox import list_nudges
+    try:
+        conn = get_db_connection(get_config().db_path)
+        nudges = list_nudges(conn, limit=limit, undismissed_only=undismissed)
+        conn.close()
+        return {"nudges": nudges}
+    except Exception as e:
+        return JSONResponse({"detail": str(e)}, status_code=500)
+
+
+@app.post("/api/nudges/{nudge_id}/dismiss")
+def dismiss_nudge(nudge_id: int) -> dict:
+    """Mark a nudge as dismissed."""
+    from proactive.outbox import dismiss_nudge as _dismiss
+    try:
+        conn = get_db_connection(get_config().db_path)
+        found = _dismiss(conn, nudge_id)
+        conn.close()
+        return {"ok": found, "id": nudge_id}
+    except Exception as e:
+        return JSONResponse({"detail": str(e)}, status_code=500)
+
+
+@app.post("/api/nudges/run/{job_name}")
+def run_nudge_job(job_name: str) -> dict:
+    """Manually trigger a Hermes job by name."""
+    from proactive.loader import load_jobs
+    from proactive.runner import run_job
+    jobs = {j["name"]: j for j in load_jobs()}
+    if job_name not in jobs:
+        return JSONResponse(
+            {"detail": f"Unknown job '{job_name}'. Available: {list(jobs)}"},
+            status_code=404,
+        )
+    try:
+        nudge = run_job(jobs[job_name])
+        if nudge is None:
+            return {"surfaced": False, "message": "skill decided to stay silent"}
+        return {"surfaced": True, "nudge": {k: v for k, v in nudge.items() if k != "signals"}}
+    except Exception as e:
+        return JSONResponse({"detail": str(e)}, status_code=500)
+
+
+# ---------------------------------------------------------------------------
 # Connectors (Hermes signal tools) -- fitness / health / tasks / music
 # ---------------------------------------------------------------------------
+
+@app.post("/api/kg/janitor")
+def kg_janitor(dry_run: bool = False) -> dict:
+    """Archive stale commitments and prune old turns.
+
+    Pass ?dry_run=true to see counts without writing.
+    """
+    from kg.janitor import run_janitor_for_config
+    try:
+        result = run_janitor_for_config(apply=not dry_run)
+        return {
+            "dry_run": dry_run,
+            "archived_tentative": result.archived_tentative,
+            "archived_soft": result.archived_soft,
+            "archived_hard": result.archived_hard,
+            "archived_conflicts": result.archived_conflicts,
+            "deleted_turns": result.deleted_turns,
+            "summary": result.summary(),
+        }
+    except Exception as e:
+        return JSONResponse({"detail": str(e)}, status_code=500)
+
 
 @app.get("/api/connectors")
 def connectors() -> dict:
