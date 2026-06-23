@@ -449,7 +449,7 @@ export function Proactive({ refresh, notify }) {
     Promise.all([
       getJSON("/api/briefing"),
       getJSON("/api/nudges" + (d ? "?include_dismissed=true" : "")),
-      getJSON("/api/runtime/jobs"),
+      getJSON("/api/nudges/jobs"),
     ]).then(([b, n, j]) => {
       setBriefing(b.briefing || null);
       setNudges(n.nudges || []);
@@ -464,13 +464,25 @@ export function Proactive({ refresh, notify }) {
   async function runNow() {
     setFiring(true);
     try {
-      const r = await postJSON("/api/runtime/tick?force=true");
-      setLastTick(r.fired || []);
+      const fired = [];
+      for (const job of jobs) {
+        const r = await postJSON(`/api/nudges/run/${encodeURIComponent(job.name)}`).catch(() => null);
+        if (!r) continue;
+        fired.push({
+          job: job.name,
+          surfaced: !!r.surfaced,
+          nudge_id: r.nudge && r.nudge.id,
+          answer: r.nudge && r.nudge.message,
+          reason: r.message,
+          routing_log: [],
+        });
+      }
+      setLastTick(fired);
       fetchAll();
-      const surfaced = (r.fired || []).filter((f) => f.surfaced).length;
-      notify(`${r.count || 0} skill(s) ran · ${surfaced} new nudge(s)`);
+      const surfaced = fired.filter((f) => f.surfaced).length;
+      notify(`${jobs.length} skill(s) ran · ${surfaced} new nudge(s)`);
     } catch {
-      notify("Tick failed — check the backend logs.");
+      notify("Run failed — check the backend logs.");
     }
     setFiring(false);
   }
@@ -563,7 +575,7 @@ export function Proactive({ refresh, notify }) {
           : activeNudges.map((n) => (
             <div key={n.id} className="tl nudge-item">
               <div className="nudge-time">{relTime(n.iso)}</div>
-              <div className="body nudge-body"><Md text={n.text} /><div className="nudge-skill"><span className="badge badge-src">{n.skill || n.job}</span></div></div>
+              <div className="body nudge-body"><Md text={n.message} /><div className="nudge-skill"><span className="badge badge-src">{n.skill || n.job_name}</span></div></div>
               <button className="nudge-dismiss" aria-label="Dismiss" onClick={() => dismiss(n.id)}>✕</button>
             </div>
           ))
@@ -574,7 +586,7 @@ export function Proactive({ refresh, notify }) {
             {suppressedNudges.map((n) => (
               <div key={n.id} className="tl nudge-item nudge-suppressed">
                 <div className="nudge-time">{relTime(n.iso)}</div>
-                <div className="body nudge-body"><Md text={n.text} /><div className="nudge-skill"><span className="badge badge-src">{n.skill || n.job}</span></div></div>
+                <div className="body nudge-body"><Md text={n.message} /><div className="nudge-skill"><span className="badge badge-src">{n.skill || n.job_name}</span></div></div>
               </div>
             ))}
           </>
@@ -586,21 +598,17 @@ export function Proactive({ refresh, notify }) {
         {jobs.length === 0
           ? <Empty big="⚙️" title="No jobs loaded" sub="Check that hermes_jobs/*.json files are present." />
           : jobs.map((job) => (
-            <div key={job.id} className="tl job-row">
+            <div key={job.name} className="tl job-row">
               <div className="job-dot" />
               <div className="body">
-                <div className="t" style={{ fontWeight: 580 }}>{job.id.replace(/_/g, " ")}</div>
+                <div className="t" style={{ fontWeight: 580 }}>{job.name.replace(/_/g, " ")}</div>
                 <div className="m" style={{ marginTop: 5 }}>
                   <span className="job-schedule">{humanCron(job.schedule)}</span>
-                  <span className="badge badge-local">{job.agency_level}</span>
+                  <span className="badge badge-local">{job.skill}</span>
                   {job.quiet_hours_aware && <span className="badge badge-src">quiet hours</span>}
                 </div>
               </div>
-              <div className="job-lastrun">
-                {job.last_fired
-                  ? <>{job.last_fired}<br /><span style={{ color: "var(--text-muted)", fontSize: 11 }}>last run</span></>
-                  : <span style={{ opacity: 0.45 }}>never run</span>}
-              </div>
+              <div className="job-lastrun"><span style={{ opacity: 0.45 }}>scheduled</span></div>
             </div>
           ))
         }
@@ -799,115 +807,3 @@ function EvalReport({ r, privacy }) {
   );
 }
 
-/* ---- Proactive runtime (Stream 2) ---------------------------------------- */
-export function Proactive({ refresh, notify }) {
-  const [briefing, setBriefing] = useState(null);
-  const [nudges, setNudges] = useState([]);
-  const [jobs, setJobs] = useState([]);
-  const [running, setRunning] = useState("");
-
-  const loadNudges = () => getJSON("/api/nudges").then((d) => setNudges(d.nudges || [])).catch(() => {});
-  const loadBriefing = () => getJSON("/api/briefing").then((d) => setBriefing(d.briefing)).catch(() => {});
-  useEffect(() => {
-    loadBriefing();
-    getJSON("/api/nudges/jobs").then((d) => setJobs(d.jobs || [])).catch(() => {});
-    loadNudges();
-  }, [refresh]);
-
-  async function runJob(name) {
-    setRunning(name);
-    try {
-      const d = await postJSON(`/api/nudges/run/${encodeURIComponent(name)}`, {});
-      notify?.(d.surfaced ? `${name}: nudge posted` : `${name}: stayed silent`);
-      loadNudges();
-    } catch {
-      notify?.(`${name}: run failed`);
-    }
-    setRunning("");
-  }
-
-  async function runAll() {
-    setRunning("*");
-    for (const j of jobs) {
-      try { await postJSON(`/api/nudges/run/${encodeURIComponent(j.name)}`, {}); } catch { /* continue */ }
-    }
-    await loadNudges();
-    notify?.("Ran all jobs");
-    setRunning("");
-  }
-
-  async function dismiss(id) {
-    try { await postJSON(`/api/nudges/${id}/dismiss`, {}); setNudges((n) => n.filter((x) => x.id !== id)); } catch { /* ignore */ }
-  }
-
-  return (
-    <>
-      <div className="privacy-banner">{BellIcon}<div><strong>Proactive runtime.</strong> Scheduled Hermes skills derive signals on-device and post nudges here. The background scheduler is off by default — run a job manually below.</div></div>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "0 0 16px" }}>
-        <button className="btn btn-primary" onClick={runAll} disabled={!!running}>{running === "*" ? "Running…" : "Run all jobs"}</button>
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{nudges.length} active nudge(s)</span>
-      </div>
-
-      {briefing && <BriefingCard b={briefing} />}
-
-      <h2 className="section-title">Nudges</h2>
-      <div className="stack">
-        {nudges.length === 0
-          ? <Empty big="🔔" title="No nudges yet" sub="Run a job below to generate one." />
-          : nudges.map((n) => (
-            <div className="card" key={n.id} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>{n.message}</div>
-                <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-muted)" }}>
-                  <span className="badge badge-src">{n.skill || "skill"}</span>{n.job_name ? ` · ${n.job_name}` : ""}{n.generated_at ? " · " + new Date(n.generated_at * 1000).toLocaleString() : ""}
-                </div>
-              </div>
-              <button className="btn" onClick={() => dismiss(n.id)}>Dismiss</button>
-            </div>
-          ))}
-      </div>
-
-      <h2 className="section-title">Scheduled jobs</h2>
-      <div className="stack">
-        {jobs.map((j) => (
-          <div className="card" key={j.name} style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <span className="badge badge-src">{j.skill}</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>{j.name}</div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{j.schedule}{j.quiet_hours_aware ? " · quiet-hours-aware" : ""}</div>
-            </div>
-            <button className="btn" onClick={() => runJob(j.name)} disabled={!!running}>{running === j.name ? "Running…" : "Run"}</button>
-          </div>
-        ))}
-      </div>
-    </>
-  );
-}
-
-function BriefingCard({ b }) {
-  const tl = b.task_load || {}, rd = b.readiness || {};
-  return (
-    <div className="card">
-      <h2 className="section-title" style={{ marginTop: 0 }}>Today's briefing</h2>
-      <div style={{ fontSize: 14, marginBottom: 10 }}>{b.headline}</div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-        <span className="chip">{tl.due_today ?? 0} due today</span>
-        <span className={"chip" + (tl.overdue ? " chip-demo" : "")}>{tl.overdue ?? 0} overdue</span>
-        {tl.heavy_day ? <span className="chip chip-demo">heavy day</span> : null}
-        {rd.recovery_status ? <span className="chip">recovery: {rd.recovery_status}</span> : null}
-        {rd.sleep_hours != null ? <span className="chip">sleep: {rd.sleep_hours}h</span> : null}
-      </div>
-      {(b.commitments_today || []).length > 0 && (
-        <>
-          <div className="day-label">Today</div>
-          {b.commitments_today.map((c, i) => (
-            <div className="tl" key={i} style={{ marginTop: 8 }}>
-              <div className="time">{c.at}</div>
-              <div className="body"><div className="t">{c.description}</div><div className="m"><SrcBadge s={c.source} /> {c.who && c.who !== "(self)" ? <span>· with {c.who}</span> : null}</div></div>
-            </div>
-          ))}
-        </>
-      )}
-    </div>
-  );
-}

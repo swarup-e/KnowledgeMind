@@ -22,7 +22,6 @@ const ICON = {
   beaker:     ic(<><path d="M6 2v6l-3 5a4 4 0 0 0 3.4 6h7.2A4 4 0 0 0 17 13L14 8V2" /><path d="M6 2h8" /><circle cx="10" cy="14" r="1.2" /></>),
   extlink:    ic(<><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></>),
   projadvisor: ic(<><circle cx="12" cy="4" r="2"/><circle cx="5" cy="20" r="2"/><circle cx="19" cy="20" r="2"/><path d="M12 6v5M12 11l-5.5 7.5M12 11l5.5 7.5"/></>),
-  proactive:   ic(<><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></>),
 };
 
 // projmgmt is mounted inside KM at /projmgmt (same origin, same port).
