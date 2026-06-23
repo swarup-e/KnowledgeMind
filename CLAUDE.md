@@ -26,7 +26,6 @@ cd frontend && npm run dev                    # Vite on :5173 (proxies /api → 
 .venv/bin/python demo_conflicts.py            # end-to-end conflict demo (offline)
 .venv/bin/python -m kg.graph                  # per-module smoke test (each module has one;
                                                # see .github/workflows/ci.yml for the full list)
-.venv/bin/python -m runtime.tests             # proactive runtime unit tests (offline, stub LLM)
 
 # Eval harness (Stream 4 — agent quality/routing/latency)
 .venv/bin/python -m eval.runner                          # offline stub agent + stub judge
