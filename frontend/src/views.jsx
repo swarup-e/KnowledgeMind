@@ -14,6 +14,7 @@ const AlertIcon = svg(<><path d="M10.3 3.3l-8 14A2 2 0 0 0 4 20h16a2 2 0 0 0 1.7
 const SendIcon = svg(<><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4 20-7z" /></>);
 const DocIcon = svg(<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></>);
 const ChartIcon = svg(<><path d="M3 3v18h18" /><rect x="7" y="10" width="3" height="7" /><rect x="12" y="6" width="3" height="11" /><rect x="17" y="13" width="3" height="4" /></>);
+const BellIcon = svg(<><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.7 21a2 2 0 0 1-3.4 0" /></>);
 
 const TypeBadge = ({ t }) => {
   const k = (t || "").toLowerCase();
@@ -527,5 +528,109 @@ function EvalReport({ r, privacy }) {
           ))}
       </div>
     </>
+  );
+}
+
+/* ---- Proactive runtime (Stream 2) ---------------------------------------- */
+export function Proactive({ refresh, notify }) {
+  const [briefing, setBriefing] = useState(null);
+  const [nudges, setNudges] = useState([]);
+  const [jobs, setJobs] = useState([]);
+  const [running, setRunning] = useState(false);
+
+  const loadNudges = () => getJSON("/api/nudges").then((d) => setNudges(d.nudges || [])).catch(() => {});
+  const loadBriefing = () => getJSON("/api/briefing").then((d) => setBriefing(d.briefing)).catch(() => {});
+  useEffect(() => {
+    loadBriefing();
+    getJSON("/api/runtime/jobs").then((d) => setJobs(d.jobs || [])).catch(() => {});
+    loadNudges();
+  }, [refresh]);
+
+  async function runNow() {
+    setRunning(true);
+    try {
+      const d = await postJSON("/api/runtime/tick?force=true", {});
+      notify?.(`Fired ${d.count} job(s)`);
+      loadNudges();
+      loadBriefing();
+    } catch {
+      notify?.("Run failed");
+    }
+    setRunning(false);
+  }
+
+  async function dismiss(id) {
+    try { await postJSON(`/api/nudges/${id}/dismiss`, {}); setNudges((n) => n.filter((x) => x.id !== id)); } catch { /* ignore */ }
+  }
+
+  return (
+    <>
+      <div className="privacy-banner">{BellIcon}<div><strong>Proactive runtime.</strong> Scheduled skills run on a cron <em>through the privacy router</em> and post nudges here. The background loop is off by default — use “Run now” to fire every job immediately.</div></div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", margin: "0 0 16px" }}>
+        <button className="btn btn-primary" onClick={runNow} disabled={running}>{running ? "Running…" : "Run now"}</button>
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{nudges.filter((n) => !n.suppressed).length} active nudge(s)</span>
+      </div>
+
+      {briefing && <BriefingCard b={briefing} />}
+
+      <h2 className="section-title">Nudges</h2>
+      <div className="stack">
+        {nudges.length === 0
+          ? <Empty big="🔔" title="No nudges yet" sub="Click “Run now” to fire the scheduled skills." />
+          : nudges.map((n) => (
+            <div className="card" key={n.id} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>{n.text}</div>
+                <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-muted)" }}>
+                  <span className="badge badge-src">{n.skill || "skill"}</span>{n.job ? ` · ${n.job}` : ""}{n.suppressed ? " · 🔕 quiet hours (queued)" : ""}{n.iso ? " · " + n.iso.replace("T", " ") : ""}
+                </div>
+              </div>
+              <button className="btn" onClick={() => dismiss(n.id)}>Dismiss</button>
+            </div>
+          ))}
+      </div>
+
+      <h2 className="section-title">Scheduled jobs</h2>
+      <div className="stack">
+        {jobs.map((j) => (
+          <div className="card" key={j.id} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <span className="badge badge-local">{j.agency_level}</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{j.id}</div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{j.skill} · {j.schedule}{j.quiet_hours_aware ? " · quiet-hours-aware" : ""}</div>
+            </div>
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{j.last_fired ? "fired " + new Date(j.last_fired * 1000).toLocaleTimeString() : "not fired"}</span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function BriefingCard({ b }) {
+  const tl = b.task_load || {}, rd = b.readiness || {};
+  return (
+    <div className="card">
+      <h2 className="section-title" style={{ marginTop: 0 }}>Today's briefing</h2>
+      <div style={{ fontSize: 14, marginBottom: 10 }}>{b.headline}</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+        <span className="chip">{tl.due_today ?? 0} due today</span>
+        <span className={"chip" + (tl.overdue ? " chip-demo" : "")}>{tl.overdue ?? 0} overdue</span>
+        {tl.heavy_day ? <span className="chip chip-demo">heavy day</span> : null}
+        {rd.recovery_status ? <span className="chip">recovery: {rd.recovery_status}</span> : null}
+        {rd.sleep_hours != null ? <span className="chip">sleep: {rd.sleep_hours}h</span> : null}
+      </div>
+      {(b.commitments_today || []).length > 0 && (
+        <>
+          <div className="day-label">Today</div>
+          {b.commitments_today.map((c, i) => (
+            <div className="tl" key={i} style={{ marginTop: 8 }}>
+              <div className="time">{c.at}</div>
+              <div className="body"><div className="t">{c.description}</div><div className="m"><SrcBadge s={c.source} /> {c.who && c.who !== "(self)" ? <span>· with {c.who}</span> : null}</div></div>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
   );
 }
