@@ -118,17 +118,23 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="KnowledgeMind", lifespan=lifespan)
 
 # --- access-key auth ("static auth") ----------------------------------------
-# Set ACCESS_KEY in the environment to lock the app: every /api/* request must
-# then carry a matching X-Access-Key header (else 401). When ACCESS_KEY is unset
-# (local dev / tests) the API is open. The key is never stored in the repo/build.
+# Set ACCESS_KEY in the environment to lock the app: every /api/* AND /projmgmt
+# request must then carry the key -- as an X-Access-Key header (KM's fetch calls)
+# or a km_access cookie (the projmgmt iframe + its own JS, which can't set custom
+# headers). When ACCESS_KEY is unset (local dev / tests) the app is open. The key
+# is never stored in the repo/build.
 ACCESS_KEY = os.environ.get("ACCESS_KEY", "").strip()
+
+
+def _is_gated(path: str) -> bool:
+    """Both the KM API and the mounted projmgmt sub-app sit behind the lock."""
+    return path.startswith("/api/") or path == "/projmgmt" or path.startswith("/projmgmt/")
 
 
 @app.middleware("http")
 async def access_key_guard(request: Request, call_next):
-    path = request.url.path
-    if ACCESS_KEY and path.startswith("/api/") and request.method != "OPTIONS":
-        provided = request.headers.get("X-Access-Key", "")
+    if ACCESS_KEY and _is_gated(request.url.path) and request.method != "OPTIONS":
+        provided = request.headers.get("X-Access-Key", "") or request.cookies.get("km_access", "")
         if not hmac.compare_digest(provided, ACCESS_KEY):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
