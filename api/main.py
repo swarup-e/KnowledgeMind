@@ -134,7 +134,8 @@ async def access_key_guard(request: Request, call_next):
 
 
 # CORS added after the auth middleware so it stays outermost -> CORS headers are
-# present even on 401s. Set ALLOWED_ORIGINS (comma-separated) to the Vercel URL.
+# present even on 401s. ALLOWED_ORIGINS (comma-separated) only matters when the
+# front-end is served from a different origin; the HF Space serves it same-origin.
 _origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,

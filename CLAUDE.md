@@ -69,7 +69,7 @@ Every tool: `dict -> {"success": bool, "formatted": str, ...}`, never raises (`d
 Tables: `persons`, `commitments`, `conflicts`, `turns`, `rag_documents`. Commitment types HARD/SOFT/TENTATIVE. Conflict detection is **person-agnostic** (the user's whole timeline) and skips TENTATIVE. Open the DB via `get_db_connection(cfg.db_path)` (idempotent `init_db`).
 
 ## Deployment
-`infra/` holds the Dockerfile (HF Spaces, port 7860), `vercel.json`, and a deploy guide; `.github/workflows/` has CI + HF/Vercel deploy. Set `ACCESS_KEY` + `GROQ_API_KEY` as host secrets.
+`infra/` holds the Dockerfile (HF Spaces, port 7860) + a deploy guide; `.github/workflows/` has CI + the HF Spaces deploy. Set `ACCESS_KEY` + `GROQ_API_KEY` as Space secrets.
 
 ## Environment variables
 | Variable | Purpose |
@@ -79,5 +79,5 @@ Tables: `persons`, `commitments`, `conflicts`, `turns`, `rag_documents`. Commitm
 | `TAVILY_API_KEY` | Web search (falls back to DuckDuckGo) |
 | `SLACK_BOT_TOKEN`, `GOOGLE_CREDENTIALS_PATH` | Live Slack / Calendar / Gmail (else mock) |
 | `STRAVA_*`, `TODOIST_API_TOKEN`, `SPOTIFY_*` | Hermes connectors (else mock) |
-| `ALLOWED_ORIGINS` | CORS origins for a split (Vercel) front-end |
+| `ALLOWED_ORIGINS` | CORS origins (only if the front-end is served from a different origin) |
 | `KM_DB_PATH`, `KM_LOCAL_MODEL`, `KM_OLLAMA_URL` | Overrides |
